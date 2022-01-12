@@ -1,8 +1,7 @@
 package dev.ftb.mods.ftbchunks.client.map;
 
-import dev.ftb.mods.ftbchunks.ColorMapLoader;
 import dev.ftb.mods.ftbchunks.FTBChunks;
-import dev.ftb.mods.ftbchunks.core.BlockStateFTBC;
+import dev.ftb.mods.ftbchunks.data.HeightUtils;
 import dev.ftb.mods.ftblibrary.math.XZ;
 import net.minecraft.Util;
 import net.minecraft.client.renderer.BiomeColors;
@@ -17,11 +16,10 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.BiomeManager;
-import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.ChunkBiomeContainer;
-import net.minecraft.world.level.material.Fluids;
+import net.minecraft.world.level.levelgen.Heightmap;
 import org.jetbrains.annotations.Nullable;
 
 /**
@@ -45,8 +43,6 @@ public class ChunkUpdateTask implements MapTask, BiomeManager.NoiseBiomeSource {
 	public final long biomeZoomSeed;
 	public final int[] blocksToUpdate;
 	private final long taskStartTime;
-
-	private int currentWaterY = Integer.MAX_VALUE;
 
 	public ChunkUpdateTask(@Nullable MapManager m, Level w, ChunkAccess ca, ChunkPos p, @Nullable ChunkBiomeContainer b, long zs, int[] s) {
 		manager = m;
@@ -97,7 +93,6 @@ public class ChunkUpdateTask implements MapTask, BiomeManager.NoiseBiomeSource {
 
 		// BiomeManager biomeManager = new BiomeManager(this, biomeZoomSeed, level.dimensionType().getBiomeZoomer());
 
-		int topY = level.getHeight() + 1;
 		BlockPos.MutableBlockPos blockPos = new BlockPos.MutableBlockPos();
 		int blockX = pos.getMinBlockX();
 		int blockZ = pos.getMinBlockZ();
@@ -113,9 +108,9 @@ public class ChunkUpdateTask implements MapTask, BiomeManager.NoiseBiomeSource {
 		for (int wi : blocksToUpdate) {
 			int wx = wi % 16;
 			int wz = wi / 16;
-			blockPos.set(blockX + wx, topY, blockZ + wz);
-			int height = Mth.clamp(getHeight(blockPos).getY(), Short.MIN_VALUE, Short.MAX_VALUE);
-			blockPos.setY(height);
+			blockPos.set(blockX + wx, chunkAccess.getHeight(Heightmap.Types.MOTION_BLOCKING, blockX + wx, blockZ + wz) + 2, blockZ + wz);
+			int waterY = Mth.clamp(HeightUtils.getHeight(level, chunkAccess, blockPos), Short.MIN_VALUE, Short.MAX_VALUE);
+			int height = blockPos.getY();
 			BlockState state = chunkAccess.getBlockState(blockPos);
 
 			int ax = mapChunk.pos.x * 16 + wx;
@@ -124,12 +119,12 @@ public class ChunkUpdateTask implements MapTask, BiomeManager.NoiseBiomeSource {
 
 			int waterLightAndBiome0 = data.waterLightAndBiome[index] & 0xFFFF;
 			int blockIndex0 = data.getBlockIndex(index);
-			int height0 = data.height[index] & 0xFFFF; // Get old height
+			int height0 = data.height[index]; // Get old height
 
-			blockPos.setY(currentWaterY == Integer.MAX_VALUE ? height : currentWaterY);
+			blockPos.setY(waterY == HeightUtils.UNKNOWN ? height : waterY);
 
 			int waterLightAndBiome = (waterLightAndBiome0 & 0b111_11111111); // Clear water and light bits
-			waterLightAndBiome |= (currentWaterY != Integer.MAX_VALUE) ? (1 << 15) : 0; // Water
+			waterLightAndBiome |= (waterY != HeightUtils.UNKNOWN) ? (1 << 15) : 0; // Water
 			waterLightAndBiome |= (level.getBrightness(LightLayer.BLOCK, blockPos) & 15) << 11; // Light
 
 			ResourceLocation id = FTBChunks.BLOCK_REGISTRY.getId(state.getBlock());
@@ -163,8 +158,6 @@ public class ChunkUpdateTask implements MapTask, BiomeManager.NoiseBiomeSource {
 				data.setBlockIndex(index, blockIndex);
 				changed = true;
 			}
-
-			currentWaterY = Integer.MAX_VALUE;
 		}
 
 		if (changed) {
@@ -178,62 +171,6 @@ public class ChunkUpdateTask implements MapTask, BiomeManager.NoiseBiomeSource {
 	@Override
 	public String toString() {
 		return "ChunkUpdateTask@" + pos;
-	}
-
-	private boolean isWater(BlockState state) {
-		if (state.getBlock() == Blocks.WATER) {
-			return true;
-		}
-
-		return state instanceof BlockStateFTBC ? ((BlockStateFTBC) state).getFTBCIsWater() : state.getFluidState().getType().isSame(Fluids.WATER);
-	}
-
-	private boolean skipBlock(BlockState state) {
-		if (state.isAir()) {
-			return true;
-		}
-
-		ResourceLocation id = FTBChunks.BLOCK_REGISTRY.getId(state.getBlock());
-		return id == null || ColorMapLoader.getBlockColor(id).isIgnored();
-	}
-
-	private BlockPos.MutableBlockPos getHeight(BlockPos.MutableBlockPos pos) {
-		int topY = pos.getY();
-
-		if (topY == -1) {
-			pos.setY(-1);
-			return pos;
-		}
-
-		for (int by = topY; by > 0; by--) {
-			pos.setY(by);
-			BlockState state = chunkAccess.getBlockState(pos);
-
-			if (by == topY || state.getBlock() == Blocks.BEDROCK) {
-				for (; by > 0; by--) {
-					pos.setY(by);
-					state = chunkAccess.getBlockState(pos);
-
-					if (state.isAir()) {
-						break;
-					}
-				}
-			}
-
-			boolean water = isWater(state);
-
-			if (water && currentWaterY == Integer.MAX_VALUE) {
-				currentWaterY = by;
-			}
-
-			if (!water && !skipBlock(state)) {
-				pos.setY(by);
-				return pos;
-			}
-		}
-
-		pos.setY(-1);
-		return pos;
 	}
 
 	@Override
